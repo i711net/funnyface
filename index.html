@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>搞怪脸工坊 - 上传照片一键恶搞</title>
+<meta name="description" content="上传人物照片，AI 自动识别五官，一键大眼、香肠嘴、大头娃娃、外星人脸，加贴纸和表情包文字。全部在浏览器本地处理，照片不上传。">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤪</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>🤪 搞怪<span>脸</span>工坊</h1>
+  <div class="hbtns">
+    <label class="filebtn">📷 上传照片<input type="file" id="file" accept="image/*"></label>
+    <button id="undo">↶ 撤销</button>
+    <button id="reset">⟲ 还原原图</button>
+    <button class="pri" id="export">💾 导出图片</button>
+  </div>
+</header>
+<main>
+  <div class="stage" id="stage"><canvas id="cv"></canvas><div id="ring"></div></div>
+  <div class="panel">
+    <div class="tabs" id="tabs">
+      <button data-t="ai" class="on">🤖 AI一键</button>
+      <button data-t="warp">变形刷</button>
+      <button data-t="fun">整图搞笑</button>
+      <button data-t="stk">贴纸</button>
+      <button data-t="txt">文字</button>
+      <button data-t="flt">滤镜</button>
+    </div>
+
+    <div class="sec show" id="sec-ai">
+      <div class="status" id="status">正在加载人脸识别模型…</div>
+      <label class="row">效果强度<input type="range" id="aiStr" min="40" max="160" value="100"></label>
+      <h3>五官改造</h3>
+      <div class="grid" id="aiFx">
+        <button data-a="bigEyes">👀 大眼萌</button>
+        <button data-a="smallEyes">😑 眯眯眼</button>
+        <button data-a="bigNose">👃 大鼻子</button>
+        <button data-a="smallNose">🤏 小鼻子</button>
+        <button data-a="bigMouth">💋 香肠嘴</button>
+        <button data-a="smallMouth">🍒 樱桃小嘴</button>
+        <button data-a="smirk">😏 歪嘴笑</button>
+        <button data-a="brow">🤨 挑眉</button>
+        <button data-a="thinFace">🔻 瘦脸尖下巴</button>
+        <button data-a="fatFace">🎈 胖嘟嘟脸</button>
+        <button data-a="bigChin">🌙 地包天下巴</button>
+        <button data-a="bigHead">🗿 大头娃娃</button>
+      </div>
+      <h3>整套变身</h3>
+      <div class="grid" id="aiCombo">
+        <button data-c="alien">👽 外星人</button>
+        <button data-c="doll">🧸 Q版娃娃</button>
+        <button data-c="frog">🐸 青蛙脸</button>
+        <button data-c="pig">🐷 小猪</button>
+        <button data-c="clown">🤡 小丑</button>
+        <button data-c="random">🎲 随机恶搞</button>
+      </div>
+      <h3>自动贴到脸上</h3>
+      <div class="grid" id="aiStk">
+        <button data-s="shades">🕶️ 墨镜</button>
+        <button data-s="glasses">🤓 书呆子眼镜</button>
+        <button data-s="mustache">🥸 八字胡</button>
+        <button data-s="clownNose">🔴 小丑鼻</button>
+        <button data-s="blush">☺️ 腮红</button>
+        <button data-s="unibrow">〰️ 一字眉</button>
+        <button data-s="crown">👑 皇冠</button>
+        <button data-s="hat">🎩 礼帽</button>
+        <button data-s="pigNose">🐽 猪鼻子</button>
+        <button data-s="sweat">💦 流汗</button>
+      </div>
+      <label class="chk"><input type="checkbox" id="showPts"> 显示识别到的五官点</label>
+      <button id="redetect" style="width:100%">🔄 重新识别当前图片</button>
+      <p class="hint">支持多张脸，会同时改。识别不到时（比如侧脸、太小、卡通图），可以用“变形刷”手动涂。</p>
+    </div>
+
+    <div class="sec" id="sec-warp">
+      <div class="grid" id="brushes">
+        <button data-b="bulge" class="on">🔍 放大</button>
+        <button data-b="pinch">🤏 缩小</button>
+        <button data-b="push">👉 推移</button>
+        <button data-b="swirl">🌀 旋转扭曲</button>
+        <button data-b="restore">🩹 局部还原</button>
+      </div>
+      <label class="row">笔刷大小<input type="range" id="size" min="10" max="300" value="80"></label>
+      <label class="row">力度<input type="range" id="str" min="1" max="10" value="5"></label>
+      <p class="hint">在眼睛上按住不放＝越来越大；鼻子往下推＝长鼻子；嘴角用旋转＝歪嘴。电脑上滚轮可调笔刷大小。</p>
+    </div>
+
+    <div class="sec" id="sec-fun">
+      <div class="grid">
+        <button data-f="bighead">🎈 中心放大</button>
+        <button data-f="smallhead">🥜 中心缩小</button>
+        <button data-f="fisheye">🐟 鱼眼镜头</button>
+        <button data-f="thin">🍝 哈哈镜·细长</button>
+        <button data-f="fat">🍔 哈哈镜·矮胖</button>
+        <button data-f="longface">🐴 拉长</button>
+        <button data-f="wave">🌊 波浪</button>
+        <button data-f="mirrorL">🪞 左脸对称</button>
+        <button data-f="mirrorR">🪞 右脸对称</button>
+        <button data-f="twist">🌪️ 漩涡</button>
+      </div>
+      <p class="hint">识别到人脸时，中心点自动对准第一张脸；也可以手动设置。</p>
+      <button id="setCenter" style="width:100%">🎯 设置中心点（点一下图）</button>
+    </div>
+
+    <div class="sec" id="sec-stk">
+      <h3>画的贴纸</h3>
+      <div class="emojis" id="draws"></div>
+      <h3>表情贴纸</h3>
+      <div class="emojis" id="emojis"></div>
+      <label class="row">大小<input type="range" id="sSize" min="20" max="800" value="120"></label>
+      <label class="row">旋转<input type="range" id="sRot" min="-180" max="180" value="0"></label>
+      <div class="grid"><button id="sFlip">↔ 翻转</button><button id="sDel">🗑 删除选中</button></div>
+      <p class="hint">点贴纸加到图上，在图上拖动摆位置；点选后可调大小、旋转。电脑上滚轮缩放。</p>
+    </div>
+
+    <div class="sec" id="sec-txt">
+      <input type="text" id="tTop" placeholder="顶部文字，例如：我不是胖">
+      <input type="text" id="tBot" placeholder="底部文字，例如：只是脸大">
+      <label class="row">字号<input type="range" id="tSize" min="4" max="20" value="9"></label>
+      <label class="row">颜色<input type="color" id="tColor" value="#ffffff"></label>
+    </div>
+
+    <div class="sec" id="sec-flt">
+      <div class="grid">
+        <button data-x="gray">⚫ 黑白</button>
+        <button data-x="sepia">📜 老照片</button>
+        <button data-x="invert">👻 反色</button>
+        <button data-x="pixel">🧱 马赛克</button>
+        <button data-x="pop">🎨 波普高饱和</button>
+        <button data-x="poster">🖍️ 卡通色块</button>
+        <button data-x="hulk">💚 绿巨人</button>
+        <button data-x="sunburn">🦞 晒伤红</button>
+      </div>
+    </div>
+  </div>
+</main>
+<footer>照片只在你的浏览器里处理，不会上传到任何服务器。人脸识别：face-api（MIT 协议）。</footer>
+
+<div class="modal" id="modal"><div class="mbox">
+  <img id="outImg" alt="导出结果">
+  <p class="hint">若“下载”没反应：电脑上右键图片 →“图片另存为”；手机上长按图片保存。</p>
+  <div style="display:flex;gap:8px;justify-content:center"><button class="pri" id="dl">⬇ 下载</button><button id="close">关闭</button></div>
+</div></div>
+<div class="toast" id="toast"></div>
+
+<script src="lib/face-api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
