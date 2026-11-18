@@ -1,26 +1,82 @@
-/* 搞怪脸工坊 app.js —— 纯前端，照片不离开浏览器 */
+/* 搞怪脸工坊 app.js —— 纯前端，照片不离开浏览器
+   结构：最多 4 个“格子”(cell)，每格独立的图片/贴纸/文字/识别结果/撤销记录。
+   当前编辑格子的状态放在下面这些全局变量里，切换格子时 saveCell / loadCell 交换。 */
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
-const work = document.createElement('canvas'), wctx = work.getContext('2d', { willReadFrequently: true });
+let work = document.createElement('canvas'), wctx = work.getContext('2d', { willReadFrequently: true });
 let W = 0, H = 0, orig = null, undoStack = [], stickers = [], sel = -1;
 let tab = 'ai', brush = 'bulge', pickCenter = false, center = null;
-let faces = [], origFaces = [], modelsReady = false, detectToken = 0, isDemo = false;
-const MAX = 1200;
+let faces = [], origFaces = [], modelsReady = false, isDemo = false;
+const MAX = 1200, UNDO_MAX = 15;
 
-function toast(m) { const t = $('toast'); t.textContent = m; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 1800); }
+function toast(m) { const t = $('toast'); t.textContent = m; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 1900); }
 function setStatus(msg, cls = '') { const s = $('status'); s.textContent = msg; s.className = 'status ' + cls; }
+const clone = o => JSON.parse(JSON.stringify(o));
+
+/* ================= 格子 ================= */
+const LAYOUTS = { '1': [1, 1], '2v': [1, 2], '2h': [2, 1], '3h': [3, 1], '3v': [1, 3], '4': [2, 2] };
+let layout = '1', active = 0;
+const cellCount = () => LAYOUTS[layout][0] * LAYOUTS[layout][1];
+function emptyCell() {
+  const c = document.createElement('canvas');
+  return { W: 0, H: 0, work: c, wctx: c.getContext('2d', { willReadFrequently: true }), orig: null, undo: [], stickers: [], sel: -1, center: null,
+    faces: [], origFaces: [], isDemo: false, src: null, rotBase: null, detecting: false, dtoken: 0, txt: { top: '', bot: '', size: 9, color: '#ffffff' } };
+}
+function makeCell(img, demo = false) {
+  const c = emptyCell(), s = Math.min(1, MAX / Math.max(img.width, img.height));
+  c.W = c.work.width = Math.round(img.width * s); c.H = c.work.height = Math.round(img.height * s);
+  c.wctx.drawImage(img, 0, 0, c.W, c.H);
+  c.orig = c.wctx.getImageData(0, 0, c.W, c.H); c.src = { img: c.orig, W: c.W, H: c.H }; c.isDemo = demo;
+  return c;
+}
+const cells = [emptyCell(), emptyCell(), emptyCell(), emptyCell()];
+const isEmpty = c => !c.W || c.isDemo;
+
+function saveCell() {
+  Object.assign(cells[active], { W, H, work, wctx, orig, undo: undoStack, stickers, sel, center, faces, origFaces, isDemo,
+    txt: { top: $('tTop').value, bot: $('tBot').value, size: +$('tSize').value, color: $('tColor').value } });
+}
+function loadCell(c) {
+  ({ W, H, work, wctx, orig, stickers, sel, center, faces, origFaces, isDemo } = c); undoStack = c.undo;
+  $('tTop').value = c.txt.top; $('tBot').value = c.txt.bot; $('tSize').value = c.txt.size; $('tColor').value = c.txt.color;
+  c.rotBase = null; resetRotUI();
+  if (W) { cv.width = W; cv.height = H; }
+  $('empty').style.display = W ? 'none' : 'flex'; cv.style.display = W ? 'block' : 'none';
+  $('emptyN').textContent = active + 1;
+  zoom = 1; applyZoom(); updateStatus(); updateCellLabel();
+}
+function switchCell(i) {
+  if (i === active || i >= cellCount()) return;
+  saveCell(); cells[active].rotBase = null; active = i; loadCell(cells[i]); render();
+}
+function updateCellLabel() {
+  const n = cellCount();
+  $('cellLbl').innerHTML = n > 1 ? `正在编辑 <b>第 ${active + 1} 格</b> / 共 ${n} 格<br><small>点右边小图切换格子</small>` : '单图模式<br><small>选上面的版面可做多格拼图</small>';
+  $('mini').style.display = n > 1 ? 'block' : 'none';
+}
+function setLayout(l) {
+  layout = l;
+  [...$('lays').children].forEach(b => b.classList.toggle('on', b.dataset.l === l));
+  if (active >= cellCount()) { saveCell(); active = 0; loadCell(cells[0]); render(); }
+  updateCellLabel(); schedulePreview(true);
+}
+function needImg() { if (!W) { toast(`第 ${active + 1} 格还没有照片，先上传`); return false; } return true; }
+
+function updateStatus() {
+  const c = cells[active];
+  if (!c.W) return setStatus(`第 ${active + 1} 格还没有照片。点上方“📷 上传照片”（可以一次选多张，自动填进空格子）。`);
+  if (c.isDemo) return setStatus(modelsReady ? '模型已就绪。点上方“📷 上传照片”，会自动识别五官。' : '正在加载人脸识别模型…', modelsReady ? 'ok' : '');
+  if (!modelsReady) return setStatus('正在加载人脸识别模型…');
+  if (c.detecting) return setStatus('正在识别人脸…');
+  if (c.faces.length) setStatus(`识别到 ${c.faces.length} 张脸 ✓ 点下面的按钮开始恶搞`, 'ok');
+  else setStatus('没识别到正脸（侧脸、太小、遮挡或卡通图可能识别不到）。可以用“变形刷”手动改。', 'err');
+}
 
 /* ================= 图片载入 ================= */
-function setImage(src, demo = false) {
-  const s = Math.min(1, MAX / Math.max(src.width, src.height));
-  W = work.width = cv.width = Math.round(src.width * s);
-  H = work.height = cv.height = Math.round(src.height * s);
-  wctx.drawImage(src, 0, 0, W, H);
-  orig = wctx.getImageData(0, 0, W, H);
-  undoStack = []; stickers = []; sel = -1; center = null; faces = []; origFaces = []; isDemo = demo;
-  zoom = 1; applyZoom(); render();
-  if (demo) setStatus(modelsReady ? '模型已就绪。点上方“📷 上传照片”，会自动识别五官。' : '正在加载人脸识别模型…', modelsReady ? 'ok' : '');
-  else detect(false, true);
+function putCell(i, c) {
+  if (i === active) { cells[i] = c; loadCell(c); render(); }
+  else { cells[i] = c; schedulePreview(true); }
+  if (!c.isDemo) detect(false, true, c);
 }
 function demo() {
   const c = document.createElement('canvas'); c.width = 700; c.height = 800; const g = c.getContext('2d');
@@ -33,28 +89,55 @@ function demo() {
   g.fillStyle = '#e0a67a'; g.beginPath(); g.moveTo(350, 360); g.lineTo(325, 440); g.lineTo(375, 440); g.fill();
   g.strokeStyle = '#a33'; g.lineWidth = 8; g.beginPath(); g.arc(350, 470, 60, .2, Math.PI - .2); g.stroke();
   g.fillStyle = '#fff'; g.font = 'bold 28px system-ui'; g.textAlign = 'center'; g.fillText('示例图 · 上传真人照片才能用 AI 一键功能', 350, 760);
-  setImage(c, true);
+  putCell(0, makeCell(c, true));
 }
-function loadFile(f) {
-  if (!f || !f.type.startsWith('image/')) return toast('请选择图片文件');
-  const u = URL.createObjectURL(f), img = new Image();
-  img.onload = () => { setImage(img); URL.revokeObjectURL(u); };
-  img.onerror = () => toast('这张图片打不开，换一张试试');
-  img.src = u;
+function readImg(f) {
+  return new Promise(res => {
+    const u = URL.createObjectURL(f), img = new Image();
+    img.onload = () => { URL.revokeObjectURL(u); res(img); };
+    img.onerror = () => { URL.revokeObjectURL(u); res(null); };
+    img.src = u;
+  });
+}
+async function loadFiles(list) {
+  const files = [...(list || [])].filter(f => f && f.type && f.type.startsWith('image/'));
+  if (!files.length) return toast('请选择图片文件');
+  if (files.length > 1 && layout === '1') setLayout(files.length === 2 ? '2h' : files.length === 3 ? '3h' : '4');
+  const n = cellCount(), targets = [active];
+  for (let i = 0; i < n && targets.length < files.length; i++) if (i !== active && isEmpty(cells[i])) targets.push(i);
+  let ok = 0;
+  for (let k = 0; k < targets.length; k++) {
+    const img = await readImg(files[k]);
+    if (!img) { toast('有一张图片打不开，已跳过'); continue; }
+    if (targets[k] === active) saveCell();
+    putCell(targets[k], makeCell(img)); ok++;
+  }
+  if (files.length > targets.length) toast(`格子不够，只放了 ${targets.length} 张`);
+  else if (ok > 1) toast(`已放入 ${ok} 张照片，点右上小图切换格子编辑`);
 }
 
 /* ================= 撤销 ================= */
 function pushUndo() {
-  undoStack.push({ img: wctx.getImageData(0, 0, W, H), st: JSON.stringify(stickers), fc: JSON.stringify(faces) });
-  if (undoStack.length > 25) undoStack.shift();
+  if (!W) return;
+  commitRot();
+  undoStack.push({ img: wctx.getImageData(0, 0, W, H), W, H, orig, st: JSON.stringify(stickers), fc: JSON.stringify(faces), center });
+  if (undoStack.length > UNDO_MAX) undoStack.shift();
+}
+function restoreImg(img, w, h) {
+  W = w; H = h;
+  if (work.width !== W || work.height !== H) { work.width = W; work.height = H; }
+  wctx.setTransform(1, 0, 0, 1, 0, 0); wctx.putImageData(img, 0, 0);
+  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; applyZoom(); }
 }
 $('undo').onclick = () => {
   const s = undoStack.pop(); if (!s) return toast('没有可以撤销的了');
-  wctx.putImageData(s.img, 0, 0); stickers = JSON.parse(s.st); faces = JSON.parse(s.fc); sel = -1; render();
+  cells[active].rotBase = null; resetRotUI();
+  restoreImg(s.img, s.W, s.H); orig = s.orig; stickers = JSON.parse(s.st); faces = JSON.parse(s.fc); center = s.center; sel = -1; render();
 };
 $('reset').onclick = () => {
-  if (!orig) return; pushUndo(); wctx.putImageData(orig, 0, 0);
-  stickers = []; sel = -1; faces = JSON.parse(JSON.stringify(origFaces)); $('tTop').value = $('tBot').value = ''; render(); toast('已还原原图');
+  const c = cells[active]; if (!c.src) return;
+  pushUndo(); restoreImg(c.src.img, c.src.W, c.src.H); orig = c.src.img;
+  stickers = []; sel = -1; center = null; faces = clone(origFaces); $('tTop').value = $('tBot').value = ''; render(); toast('已还原这一格的原图');
 };
 
 /* ================= 画的贴纸 ================= */
@@ -96,29 +179,37 @@ const DRAW = {
 const DRAW_NAMES = { mustache: '🥸', clownNose: '🔴', blush: '☺️', unibrow: '〰️', glasses: '👓' };
 
 /* ================= 渲染 ================= */
-function render(showSel = true) {
-  ctx.clearRect(0, 0, W, H); ctx.drawImage(work, 0, 0);
-  stickers.forEach((s, i) => {
-    ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(s.r * Math.PI / 180); ctx.scale(s.f ? -1 : 1, 1);
-    if (s.d) DRAW[s.d](ctx, s.s);
+function drawCell(g, c, showSel) {
+  g.drawImage(c.work, 0, 0);
+  c.stickers.forEach((s, i) => {
+    g.save(); g.translate(s.x, s.y); g.rotate(s.r * Math.PI / 180); g.scale(s.f ? -1 : 1, 1);
+    if (s.d) DRAW[s.d](g, s.s);
     else {
-      ctx.font = s.s + 'px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(s.e, 0, s.s * .06);
+      g.font = s.s + 'px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(s.e, 0, s.s * .06);
     }
-    if (showSel && i === sel) { ctx.setLineDash([8, 6]); ctx.lineWidth = 3; ctx.strokeStyle = '#ff6b35'; ctx.strokeRect(-s.s * .6, -s.s * .6, s.s * 1.2, s.s * 1.2); }
-    ctx.restore();
+    if (showSel && i === c.sel) { g.setLineDash([8, 6]); g.lineWidth = 3; g.strokeStyle = '#ff6b35'; g.strokeRect(-s.s * .6, -s.s * .6, s.s * 1.2, s.s * 1.2); }
+    g.restore();
   });
-  const fs = Math.round(W * $('tSize').value / 100);
-  ctx.font = `900 ${fs}px Impact,"Arial Black","Microsoft YaHei","PingFang SC",sans-serif`;
-  ctx.textAlign = 'center'; ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(3, fs / 7); ctx.strokeStyle = '#000'; ctx.fillStyle = $('tColor').value;
-  const t = $('tTop').value, b = $('tBot').value;
-  if (t) { ctx.textBaseline = 'top'; ctx.strokeText(t, W / 2, fs * .3, W * .95); ctx.fillText(t, W / 2, fs * .3, W * .95); }
-  if (b) { ctx.textBaseline = 'bottom'; ctx.strokeText(b, W / 2, H - fs * .3, W * .95); ctx.fillText(b, W / 2, H - fs * .3, W * .95); }
-  if (showSel && $('showPts').checked) {
-    ctx.fillStyle = '#00e5ff';
-    const r = Math.max(2, W / 400);
-    faces.forEach(P => P.forEach(p => { ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 7); ctx.fill(); }));
+  const T = c.txt, fs = Math.round(c.W * T.size / 100);
+  if (T.top || T.bot) {
+    g.save();
+    g.font = `900 ${fs}px Impact,"Arial Black","Microsoft YaHei","PingFang SC",sans-serif`;
+    g.textAlign = 'center'; g.lineJoin = 'round'; g.lineWidth = Math.max(3, fs / 7); g.strokeStyle = '#000'; g.fillStyle = T.color;
+    if (T.top) { g.textBaseline = 'top'; g.strokeText(T.top, c.W / 2, fs * .3, c.W * .95); g.fillText(T.top, c.W / 2, fs * .3, c.W * .95); }
+    if (T.bot) { g.textBaseline = 'bottom'; g.strokeText(T.bot, c.W / 2, c.H - fs * .3, c.W * .95); g.fillText(T.bot, c.W / 2, c.H - fs * .3, c.W * .95); }
+    g.restore();
   }
+  if (showSel && $('showPts').checked) {
+    g.fillStyle = '#00e5ff';
+    const r = Math.max(2, c.W / 400);
+    c.faces.forEach(P => P.forEach(p => { g.beginPath(); g.arc(p[0], p[1], r, 0, 7); g.fill(); }));
+  }
+}
+function render(showSel = true) {
+  saveCell();
+  if (W) { ctx.clearRect(0, 0, W, H); drawCell(ctx, cells[active], showSel); }
+  schedulePreview();
 }
 
 /* ================= 像素变形核心 ================= */
@@ -175,30 +266,30 @@ async function initModels() {
     if (!okGL) await faceapi.tf.setBackend('cpu');
     await faceapi.tf.ready();
     await Promise.all([faceapi.nets.ssdMobilenetv1.loadFromUri('./models'), faceapi.nets.faceLandmark68Net.loadFromUri('./models')]);
-    modelsReady = true;
-    if (isDemo) setStatus('模型已就绪。点上方“📷 上传照片”，会自动识别五官。', 'ok');
-    else if (W) detect(false, true);
+    modelsReady = true; saveCell();
+    updateStatus();
+    for (const c of cells) if (c.W && !c.isDemo && !c.origFaces.length) await detect(false, true, c);
   } catch (e) {
     console.error(e);
     setStatus('识别模型加载失败（如果是直接双击打开 index.html，请改用网址访问或本地服务器）。手动工具照常能用。', 'err');
   }
 }
-async function detect(silent = false, fresh = false) {
-  if (!modelsReady || !W || isDemo) return;
-  const token = ++detectToken;
-  if (!silent) setStatus('正在识别人脸…');
+/* 识别某个格子（默认当前格）。silent=编辑后静默更新，fresh=作为原图识别结果保存 */
+async function detect(silent = false, fresh = false, c = null) {
+  if (!c) { saveCell(); c = cells[active]; }
+  if (!modelsReady || !c.W || c.isDemo) return;
+  const token = ++c.dtoken, isCur = () => cells[active] === c;
+  if (!silent) { c.detecting = true; if (isCur()) updateStatus(); }
   try {
-    const res = await faceapi.detectAllFaces(work, new faceapi.SsdMobilenetv1Options({ minConfidence: .35, maxResults: 10 })).withFaceLandmarks();
-    if (token !== detectToken) return;
+    const res = await faceapi.detectAllFaces(c.work, new faceapi.SsdMobilenetv1Options({ minConfidence: .35, maxResults: 10 })).withFaceLandmarks();
+    if (token !== c.dtoken) return;
+    if (isCur()) saveCell();
     const found = res.map(r => r.landmarks.positions.map(p => [p.x, p.y]));
-    if (!silent || found.length >= faces.length) faces = found;
-    if (fresh) origFaces = JSON.parse(JSON.stringify(faces));
-    if (!silent) {
-      if (faces.length) setStatus(`识别到 ${faces.length} 张脸 ✓ 点下面的按钮开始恶搞`, 'ok');
-      else setStatus('没识别到正脸（侧脸、太小、遮挡或卡通图可能识别不到）。可以用“变形刷”手动改。', 'err');
-    }
-    render();
-  } catch (e) { console.error(e); if (!silent) setStatus('识别出错了，可以点“重新识别”再试。', 'err'); }
+    if (!silent || found.length >= c.faces.length) c.faces = found;
+    if (fresh) c.origFaces = clone(c.faces);
+    if (!silent) c.detecting = false;
+    if (isCur()) { faces = c.faces; origFaces = c.origFaces; updateStatus(); render(); }
+  } catch (e) { console.error(e); c.detecting = false; if (!silent && isCur()) setStatus('识别出错了，可以点“重新识别”再试。', 'err'); }
 }
 
 /* ================= 脸部几何 ================= */
@@ -207,9 +298,9 @@ const avg = arr => [arr.reduce((s, p) => s + p[0], 0) / arr.length, arr.reduce((
 function geo(P) {
   const R = (i, j) => avg(P.slice(i, j + 1));
   const eyeR = R(36, 41), eyeL = R(42, 47), eyeMid = avg([eyeR, eyeL]);
-  const ang = Math.atan2(eyeL[1] - eyeR[1], eyeL[0] - eyeR[0]);
-  const up = [Math.sin(ang), -Math.cos(ang)];
   const browMid = avg([P[19], P[24]]);
+  const ux = browMid[0] - P[8][0], uy = browMid[1] - P[8][1], ul = Math.hypot(ux, uy) || 1;
+  const up = [ux / ul, uy / ul], ang = Math.atan2(up[0], -up[1]);
   return {
     P, eyeR, eyeL, eyeMid, ang, up, browMid,
     eyeW: (dist(P[36], P[39]) + dist(P[42], P[45])) / 2, eyeDist: dist(eyeR, eyeL),
@@ -286,6 +377,7 @@ const COMBO = {
 };
 
 function needFaces() {
+  if (!needImg()) return false;
   if (isDemo) { toast('先上传一张真人照片'); return false; }
   if (!modelsReady) { toast('模型还在加载，稍等一下'); return false; }
   if (!faces.length) { toast('没识别到脸，试试“重新识别”或用手动工具'); return false; }
@@ -304,7 +396,7 @@ function runOnFaces(fn, warps = true) {
 $('aiFx').onclick = e => { const b = e.target.closest('button'); if (b) runOnFaces(G => FX[b.dataset.a](G)); };
 $('aiCombo').onclick = e => { const b = e.target.closest('button'); if (b) runOnFaces(G => COMBO[b.dataset.c](G)); };
 $('aiStk').onclick = e => { const b = e.target.closest('button'); if (b) runOnFaces(G => STK[b.dataset.s](G), false); };
-$('redetect').onclick = () => { if (isDemo) return toast('先上传一张真人照片'); if (!modelsReady) return toast('模型还在加载'); detect(); };
+$('redetect').onclick = () => { if (!needImg()) return; if (isDemo) return toast('先上传一张真人照片'); if (!modelsReady) return toast('模型还在加载'); detect(); };
 $('showPts').onchange = () => render();
 
 /* ================= 整图效果 ================= */
@@ -327,7 +419,7 @@ const FUN = {
   mirrorR: () => { const c = midX(); remapAll((x, y) => [x < c ? 2 * c - x : x, y]); },
   twist: () => { const [c, r] = ctr(.45); remapAll((x, y) => { const dx = x - c[0], dy = y - c[1], d = Math.hypot(dx, dy); if (d >= r) return [x, y]; const t = d / r, a = 2.2 * (1 - t) * (1 - t), cs = Math.cos(a), sn = Math.sin(a); return [c[0] + dx * cs - dy * sn, c[1] + dx * sn + dy * cs]; }); }
 };
-document.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { pushUndo(); FUN[b.dataset.f](); render(); detect(true); });
+document.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { if (!needImg()) return; pushUndo(); FUN[b.dataset.f](); render(); detect(true); });
 $('setCenter').onclick = () => { pickCenter = true; $('setCenter').classList.add('on'); toast('在图上点一下中心位置'); };
 
 /* ================= 滤镜 ================= */
@@ -350,12 +442,12 @@ function applyFilter(n) {
   for (let i = 0; i < D.length; i += 4) { const v = f(D[i], D[i + 1], D[i + 2]); D[i] = v[0]; D[i + 1] = v[1]; D[i + 2] = v[2]; }
   wctx.putImageData(d, 0, 0);
 }
-document.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { pushUndo(); applyFilter(b.dataset.x); render(); });
+document.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { if (!needImg()) return; pushUndo(); applyFilter(b.dataset.x); render(); });
 
 
 /* ================= 画面缩放 / 拖动 ================= */
 const stage = $('stage');
-let zoom = 1, panMode = false, spaceDown = false, panning = null;
+var zoom = 1; let panMode = false, spaceDown = false, panning = null;
 function fitScale() { return W ? Math.min((stage.clientWidth - 16) / W, (stage.clientHeight - 16) / H) : 1; }
 function applyZoom() {
   if (!W) return; const s = fitScale() * zoom;
@@ -394,6 +486,7 @@ function updRing(e) {
 }
 function loop() { if (!down) return; if (brush !== 'push' && cur) { warpAt(cur[0], cur[1], $('size').value / 2, brush, $('str').value * .012); render(); } raf = requestAnimationFrame(loop); }
 cv.addEventListener('pointerdown', e => {
+  if (!W) return;
   cv.setPointerCapture(e.pointerId); const p = pos(e);
   if (panMode || spaceDown || e.button === 1) { e.preventDefault(); panning = { x: e.clientX, y: e.clientY, l: stage.scrollLeft, t: stage.scrollTop }; return; }
   if (pickCenter) { center = p; pickCenter = false; $('setCenter').classList.remove('on'); toast('中心点已设好，再点效果按钮'); return; }
@@ -434,7 +527,7 @@ $('tabs').onclick = e => {
 $('brushes').onclick = e => { const b = e.target.closest('button'); if (!b) return; brush = b.dataset.b; [...$('brushes').children].forEach(x => x.classList.toggle('on', x === b)); };
 
 /* 贴纸面板 */
-function addCenter(o) { pushUndo(); addStk(Object.assign({ x: W / 2, y: H / 2, s: Math.round(Math.min(W, H) * .22) }, o)); sel = stickers.length - 1; syncS(); render(); }
+function addCenter(o) { if (!needImg()) return; pushUndo(); addStk(Object.assign({ x: W / 2, y: H / 2, s: Math.round(Math.min(W, H) * .22) }, o)); sel = stickers.length - 1; syncS(); render(); }
 Object.keys(DRAW).forEach(k => { const b = document.createElement('button'); b.textContent = DRAW_NAMES[k]; b.title = k; b.onclick = () => addCenter({ d: k }); $('draws').appendChild(b); });
 '😎 🤓 🥸 🤡 👓 🕶️ 🎩 👑 🧢 🎓 🪖 👒 👄 💋 👅 👃 👀 👁️ 🦷 🥵 😂 🤣 😜 🤪 💩 🔥 💦 💢 💤 ❤️ ⭐ ✨ 🌈 🐷 🐽 🐶 🐱 🦄 🍕 🍌 🎉 💯'.split(' ').forEach(m => {
   const b = document.createElement('button'); b.textContent = m; b.onclick = () => addCenter({ e: m }); $('emojis').appendChild(b);
@@ -450,18 +543,135 @@ document.addEventListener('keydown', e => {
 });
 ['tTop', 'tBot', 'tSize', 'tColor'].forEach(id => $(id).oninput = () => render());
 
+/* ================= 旋转 / 翻转（当前格） ================= */
+const normDeg = d => { d = ((d + 180) % 360 + 360) % 360 - 180; return d; };
+function snapState() {
+  const cp = document.createElement('canvas'); cp.width = W; cp.height = H; cp.getContext('2d').drawImage(work, 0, 0);
+  return { work: cp, W, H, orig, st: JSON.stringify(stickers), fc: JSON.stringify(faces), center };
+}
+/* 用矩阵 m 把 base 状态变换到 nw×nh 的新画布；贴纸、五官点、中心点同步变换 */
+function applyMatrix(base, nw, nh, m, stkFn, scale = 1) {
+  const nc = document.createElement('canvas'); nc.width = nw; nc.height = nh;
+  const g = nc.getContext('2d', { willReadFrequently: true });
+  g.imageSmoothingQuality = 'high'; g.setTransform(m); g.drawImage(base.work, 0, 0); g.setTransform(1, 0, 0, 1, 0, 0);
+  const oc = document.createElement('canvas'); oc.width = base.W; oc.height = base.H; oc.getContext('2d').putImageData(base.orig, 0, 0);
+  const o2 = document.createElement('canvas'); o2.width = nw; o2.height = nh; const og = o2.getContext('2d');
+  og.setTransform(m); og.drawImage(oc, 0, 0);
+  const mp = p => { const q = m.transformPoint(new DOMPoint(p[0], p[1])); return [q.x, q.y]; };
+  W = nw; H = nh; work = nc; wctx = g; orig = og.getImageData(0, 0, nw, nh);
+  stickers = JSON.parse(base.st).map(s => { const q = mp([s.x, s.y]); s.x = q[0]; s.y = q[1]; s.s *= scale; stkFn(s); s.r = Math.round(normDeg(s.r)); return s; });
+  faces = JSON.parse(base.fc).map(P => P.map(mp));
+  center = base.center ? mp(base.center) : null; sel = -1;
+  cv.width = W; cv.height = H; applyZoom(); render();
+}
+function rotateFrom(base, deg, fill) {
+  const a = deg * Math.PI / 180, cs = Math.abs(Math.cos(a)), sn = Math.abs(Math.sin(a));
+  let nw, nh, s = 1;
+  if (fill && deg % 90 !== 0) { nw = base.W; nh = base.H; s = Math.max((base.W * cs + base.H * sn) / base.W, (base.W * sn + base.H * cs) / base.H); }
+  else { nw = Math.round(base.W * cs + base.H * sn); nh = Math.round(base.W * sn + base.H * cs); }
+  const m = new DOMMatrix().translate(nw / 2, nh / 2).rotate(deg).scale(s).translate(-base.W / 2, -base.H / 2);
+  applyMatrix(base, nw, nh, m, st => { st.r += deg; }, s);
+}
+function resetRotUI() { $('rot').value = 0; $('rotVal').textContent = '0°'; }
+function commitRot() { const c = cells[active]; if (c.rotBase) { c.rotBase = null; resetRotUI(); } }
+function liveRotate(v) {
+  if (!needImg()) { resetRotUI(); return; }
+  const c = cells[active];
+  if (!c.rotBase) { pushUndo(); c.rotBase = snapState(); }
+  $('rot').value = v; $('rotVal').textContent = v + '°';
+  rotateFrom(c.rotBase, +v, $('rotFill').checked);
+}
+$('rot').oninput = () => liveRotate($('rot').value);
+$('rotM1').onclick = () => liveRotate(Math.max(-180, +$('rot').value - 1));
+$('rotP1').onclick = () => liveRotate(Math.min(180, +$('rot').value + 1));
+$('rotFill').onchange = () => { const c = cells[active]; if (c.rotBase) rotateFrom(c.rotBase, +$('rot').value, $('rotFill').checked); };
+$('rotL90').onclick = () => { if (!needImg()) return; pushUndo(); rotateFrom(snapState(), -90, false); };
+$('rotR90').onclick = () => { if (!needImg()) return; pushUndo(); rotateFrom(snapState(), 90, false); };
+$('flipH').onclick = () => { if (!needImg()) return; pushUndo(); applyMatrix(snapState(), W, H, new DOMMatrix().translate(W, 0).scale(-1, 1), s => { s.f = !s.f; s.r = -s.r; }); };
+$('flipV').onclick = () => { if (!needImg()) return; pushUndo(); applyMatrix(snapState(), W, H, new DOMMatrix().translate(0, H).scale(1, -1), s => { s.f = !s.f; s.r = 180 - s.r; }); };
+
+/* ================= 版面拼图 ================= */
+const RATIOS = { auto: 0, '1:1': 1, '3:4': 3 / 4, '4:3': 4 / 3, '2:3': 2 / 3, '3:2': 3 / 2, '9:16': 9 / 16, '16:9': 16 / 9 };
+function collageOpts() {
+  return { ratio: $('cRatio').value, fit: $('cFit').value, gap: +$('cGap').value, color: $('cColor').value, radius: +$('cRadius').value, cap: $('cCap').value.trim(), capColor: $('cCapColor').value };
+}
+/* 把版面画到 target 画布上；Lm=长边像素。返回每格的矩形（用于点击小图切换） */
+function compose(target, Lm, preview = false) {
+  saveCell();
+  const [cols, rows] = LAYOUTS[layout], n = cols * rows, o = collageOpts();
+  let a = RATIOS[o.ratio];
+  if (!a) { const f = cells.slice(0, n).find(c => c.W); const ca = f ? f.W / f.H : 3 / 4; a = cols * ca / rows; }
+  let TW, TH; if (a >= 1) { TW = Lm; TH = Lm / a; } else { TH = Lm; TW = Lm * a; }
+  const g = o.gap / 1000 * Math.max(TW, TH), rad = o.radius / 1000 * Math.max(TW, TH);
+  const capH = o.cap ? Math.max(TW, TH) * .09 : 0;
+  target.width = Math.round(TW); target.height = Math.round(TH + capH);
+  const x = target.getContext('2d');
+  x.fillStyle = o.color; x.fillRect(0, 0, target.width, target.height);
+  const cw = (TW - g * (cols + 1)) / cols, ch = (TH - g * (rows + 1)) / rows, rects = [];
+  for (let r = 0; r < rows; r++) for (let col = 0; col < cols; col++) {
+    const i = r * cols + col, rx = g + col * (cw + g), ry = g + r * (ch + g), c = cells[i];
+    rects.push([rx, ry, cw, ch]);
+    x.save(); x.beginPath();
+    if (rad > 0 && x.roundRect) x.roundRect(rx, ry, cw, ch, rad); else x.rect(rx, ry, cw, ch);
+    x.clip();
+    if (c.W) {
+      const s = o.fit === 'cover' ? Math.max(cw / c.W, ch / c.H) : Math.min(cw / c.W, ch / c.H);
+      x.translate(rx + cw / 2, ry + ch / 2); x.scale(s, s); x.translate(-c.W / 2, -c.H / 2);
+      drawCell(x, c, false);
+    } else if (preview) {
+      x.fillStyle = 'rgba(128,128,128,.18)'; x.fillRect(rx, ry, cw, ch);
+      x.fillStyle = 'rgba(80,80,80,.7)'; x.font = `bold ${Math.min(cw, ch) * .35}px system-ui`; x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.fillText(preview ? '+' : '', rx + cw / 2, ry + ch / 2);
+    }
+    x.restore();
+    if (preview && i === active) { x.strokeStyle = '#ff6b35'; x.lineWidth = Math.max(3, Lm / 45); x.strokeRect(rx + 1, ry + 1, cw - 2, ch - 2); }
+  }
+  if (capH) {
+    const fs = capH * .5;
+    x.fillStyle = o.capColor; x.font = `900 ${fs}px "Microsoft YaHei","PingFang SC",system-ui,sans-serif`; x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillText(o.cap, TW / 2, TH + capH / 2 - g * .3, TW * .92);
+  }
+  return rects;
+}
+let miniRects = [], prevT = 0, prevPending = false;
+function schedulePreview(force = false) {
+  if (cellCount() < 2 || prevPending) return;
+  const wait = force ? 0 : Math.max(0, 150 - (performance.now() - prevT));
+  prevPending = true;
+  setTimeout(() => requestAnimationFrame(() => { prevPending = false; prevT = performance.now(); miniRects = compose($('mini'), 240, true); }), wait);
+}
+$('mini').addEventListener('click', e => {
+  const r = $('mini').getBoundingClientRect(), x = (e.clientX - r.left) * $('mini').width / r.width, y = (e.clientY - r.top) * $('mini').height / r.height;
+  const i = miniRects.findIndex(q => x >= q[0] && x <= q[0] + q[2] && y >= q[1] && y <= q[1] + q[3]);
+  if (i >= 0) switchCell(i);
+});
+$('lays').onclick = e => { const b = e.target.closest('button'); if (b) setLayout(b.dataset.l); };
+['cRatio', 'cFit', 'cGap', 'cColor', 'cRadius', 'cCap', 'cCapColor'].forEach(id => $(id).addEventListener('input', () => schedulePreview(true)));
+document.querySelectorAll('.swatch').forEach(b => b.onclick = () => { $('cColor').value = b.dataset.c; schedulePreview(true); });
+$('empty').onclick = () => $('file').click();
+
 /* 上传：按钮 / 拖放 / 粘贴 */
-$('file').onchange = e => { loadFile(e.target.files[0]); e.target.value = ''; };
+$('file').onchange = e => { loadFiles(e.target.files); e.target.value = ''; };
 const st = $('stage');
 st.addEventListener('dragover', e => { e.preventDefault(); st.classList.add('drag'); });
 st.addEventListener('dragleave', () => st.classList.remove('drag'));
-st.addEventListener('drop', e => { e.preventDefault(); st.classList.remove('drag'); loadFile(e.dataTransfer.files[0]); });
-window.addEventListener('paste', e => { const it = [...((e.clipboardData || {}).items || [])].find(i => i.type.startsWith('image/')); if (it) loadFile(it.getAsFile()); });
+st.addEventListener('drop', e => { e.preventDefault(); st.classList.remove('drag'); loadFiles(e.dataTransfer.files); });
+window.addEventListener('paste', e => { const fs = [...((e.clipboardData || {}).items || [])].filter(i => i.type.startsWith('image/')).map(i => i.getAsFile()); if (fs.length) loadFiles(fs); });
 
 /* ================= 导出 ================= */
 let dlCap = null;
 try { if (window.claude && window.claude.use) window.claude.use('downloads').then(d => dlCap = d).catch(() => {}); } catch (e) {}
-$('export').onclick = () => { render(false); $('outImg').src = cv.toDataURL('image/jpeg', .92); render(); $('modal').classList.add('show'); };
+$('export').onclick = () => {
+  saveCell();
+  const n = cellCount(), used = cells.slice(0, n), filled = used.filter(c => c.W).length;
+  if (!filled) return toast('还没有照片可以导出');
+  const out = document.createElement('canvas');
+  const Lm = n === 1 ? Math.max(cells[0].W, cells[0].H) : 2000;
+  compose(out, Lm, false);
+  $('outImg').src = out.toDataURL('image/jpeg', .92);
+  $('modal').classList.add('show');
+  if (filled < n) toast(`还有 ${n - filled} 格没放照片`);
+};
 $('dl').onclick = async () => {
   const name = '搞怪脸_' + Date.now() + '.jpg', url = $('outImg').src;
   if (dlCap) {
@@ -477,5 +687,6 @@ $('dl').onclick = async () => {
 $('close').onclick = () => $('modal').classList.remove('show');
 $('modal').onclick = e => { if (e.target.id === 'modal') $('modal').classList.remove('show'); };
 
+loadCell(cells[0]);
 demo();
 initModels();

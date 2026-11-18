@@ -12,7 +12,7 @@
 <header>
   <h1>🤪 搞怪<span>脸</span>工坊</h1>
   <div class="hbtns">
-    <label class="filebtn">📷 上传照片<input type="file" id="file" accept="image/*"></label>
+    <label class="filebtn">📷 上传照片<input type="file" id="file" accept="image/*" multiple></label>
     <button id="undo">↶ 撤销</button>
     <button id="reset">⟲ 还原原图</button>
     <button class="pri" id="export">💾 导出图片</button>
@@ -20,7 +20,13 @@
 </header>
 <main>
   <div class="stagewrap">
-    <div class="stage" id="stage"><canvas id="cv"></canvas></div>
+    <div class="strip">
+      <div class="lays" id="lays"><button data-l="1" class="on" title="单图"><svg viewBox="0 0 24 24" width="22" height="22"><rect x="2" y="2" width="20" height="20" rx="1.5"/></svg><span>单图</span></button><button data-l="2v" title="上下"><svg viewBox="0 0 24 24" width="22" height="22"><rect x="2" y="2" width="20" height="9" rx="1.5"/><rect x="2" y="13" width="20" height="9" rx="1.5"/></svg><span>上下</span></button><button data-l="2h" title="左右"><svg viewBox="0 0 24 24" width="22" height="22"><rect x="2" y="2" width="9" height="20" rx="1.5"/><rect x="13" y="2" width="9" height="20" rx="1.5"/></svg><span>左右</span></button><button data-l="3h" title="三竖"><svg viewBox="0 0 24 24" width="22" height="22"><rect x="2" y="2" width="5.4" height="20" rx="1.5"/><rect x="9.3" y="2" width="5.4" height="20" rx="1.5"/><rect x="16.6" y="2" width="5.4" height="20" rx="1.5"/></svg><span>三竖</span></button><button data-l="3v" title="三横"><svg viewBox="0 0 24 24" width="22" height="22"><rect x="2" y="2" width="20" height="5.4" rx="1.5"/><rect x="2" y="9.3" width="20" height="5.4" rx="1.5"/><rect x="2" y="16.6" width="20" height="5.4" rx="1.5"/></svg><span>三横</span></button><button data-l="4" title="田字"><svg viewBox="0 0 24 24" width="22" height="22"><rect x="2" y="2" width="9" height="9" rx="1.5"/><rect x="13" y="2" width="9" height="9" rx="1.5"/><rect x="2" y="13" width="9" height="9" rx="1.5"/><rect x="13" y="13" width="9" height="9" rx="1.5"/></svg><span>田字</span></button></div>
+      <div class="cellinfo"><div id="cellLbl"></div><canvas id="mini" title="点击切换要编辑的格子"></canvas></div>
+    </div>
+    <div class="stage" id="stage"><canvas id="cv"></canvas>
+      <div class="empty" id="empty"><div style="font-size:46px">📷</div><b>第 <span id="emptyN">1</span> 格还没有照片</b><span>点这里上传（可一次选多张，自动填进空格子）</span></div>
+    </div>
     <div class="zoombar">
       <button id="zOut" title="缩小">－</button>
       <span id="zVal">100%</span>
@@ -38,6 +44,8 @@
       <button data-t="stk">贴纸</button>
       <button data-t="txt">文字</button>
       <button data-t="flt">滤镜</button>
+      <button data-t="rot">🔄 旋转翻转</button>
+      <button data-t="col">🧩 拼图设置</button>
     </div>
 
     <div class="sec show" id="sec-ai">
@@ -145,6 +153,31 @@
         <button data-x="sunburn">🦞 晒伤红</button>
       </div>
     </div>
+    <div class="sec" id="sec-rot">
+      <label class="row">角度<input type="range" id="rot" min="-180" max="180" value="0"><span id="rotVal" style="min-width:42px;text-align:right">0°</span></label>
+      <div class="grid">
+        <button id="rotM1">－1° 微调</button><button id="rotP1">＋1° 微调</button>
+        <button id="rotL90">↺ 左转 90°</button><button id="rotR90">↻ 右转 90°</button>
+        <button id="flipH">↔ 左右翻转</button><button id="flipV">↕ 上下翻转</button>
+      </div>
+      <label class="chk"><input type="checkbox" id="rotFill" checked> 自动放大，裁掉旋转后的空白角</label>
+      <p class="hint">拖动滑块实时预览，只对当前格子生效。不勾选“裁掉空白角”时会保留完整画面，空白处在拼图里显示为边框颜色。贴纸和识别到的五官会跟着一起转。</p>
+    </div>
+
+    <div class="sec" id="sec-col">
+      <p class="hint" style="margin-top:0">先在图片上方选版面（单图／上下／左右／三竖／三横／田字），每一格都能单独上传、单独恶搞。这里设置整张拼图的样式，导出时生成一张图。</p>
+      <label class="row">整体比例<select id="cRatio">
+        <option value="auto">自动（按照片比例）</option><option value="1:1">1:1 正方形</option><option value="3:4">3:4 竖版</option><option value="2:3">2:3 竖版</option><option value="9:16">9:16 手机竖屏</option><option value="4:3">4:3 横版</option><option value="3:2">3:2 横版</option><option value="16:9">16:9 宽屏</option>
+      </select></label>
+      <label class="row">照片填充<select id="cFit"><option value="cover">填满格子（多余裁掉）</option><option value="contain">完整显示（留边）</option></select></label>
+      <label class="row">边框粗细<input type="range" id="cGap" min="0" max="60" value="18"></label>
+      <label class="row">圆角<input type="range" id="cRadius" min="0" max="80" value="12"></label>
+      <label class="row">边框颜色<input type="color" id="cColor" value="#ffffff">
+        <span class="swatches"><button class="swatch" data-c="#ffffff" style="background:#fff"></button><button class="swatch" data-c="#111111" style="background:#111"></button><button class="swatch" data-c="#ffb6d5" style="background:#ffb6d5"></button><button class="swatch" data-c="#ffd23f" style="background:#ffd23f"></button><button class="swatch" data-c="#8ecae6" style="background:#8ecae6"></button><button class="swatch" data-c="#b8e986" style="background:#b8e986"></button></span></label>
+      <input type="text" id="cCap" placeholder="底部签名文字（大头贴风格），例如：2026.11.18 好朋友一辈子">
+      <label class="row">文字颜色<input type="color" id="cCapColor" value="#ff4f8b"></label>
+    </div>
+
     <div class="foot">照片只在你的浏览器里处理，不会上传到任何服务器。人脸识别：face-api（MIT 协议）。<br>放大查看：图片右下角 ＋／－，或按住 Ctrl 滚动滚轮；放大后点 ✋ 或按住空格拖动画面。</div>
   </div>
 </main>
