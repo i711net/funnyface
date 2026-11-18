@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>搞怪脸工坊 - 上传照片一键恶搞</title>
 <meta name="description" content="上传人物照片，AI 自动识别五官，一键大眼、香肠嘴、大头娃娃、外星人脸，加贴纸和表情包文字。全部在浏览器本地处理，照片不上传。">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤪</text></svg>">
@@ -88,6 +88,13 @@
         <button data-s="pigNose">🐽 猪鼻子</button>
         <button data-s="sweat">💦 流汗</button>
       </div>
+      <div class="stkctl">
+        <div class="hint" id="aHint" style="margin-top:0">先点一下图上的贴纸选中它，再用下面的滑块调整。</div>
+        <label class="row">大小<input type="range" id="aSize" min="20" max="1200" value="120"></label>
+        <label class="row">旋转<input type="range" id="aRot" min="-180" max="180" value="0"><span class="rv" id="aRotV">0°</span></label>
+        <div class="grid"><button id="aFlip">↔ 翻转</button><button id="aDel">🗑 删除</button></div>
+        <label class="chk"><input type="checkbox" id="aAll" checked> 同一批一起调（比如每张脸上的墨镜一起变）</label>
+      </div>
       <label class="chk"><input type="checkbox" id="showPts"> 显示识别到的五官点</label>
       <button id="redetect" style="width:100%">🔄 重新识别当前图片</button>
       <p class="hint">自动贴上的贴纸：点一下选中，拖动换位置，拖右下角橙色圆点（或双指捏合）调大小和角度。<br>支持多张脸，会同时改。识别不到时（比如侧脸、太小、卡通图），可以用“变形刷”手动涂。</p>
@@ -128,8 +135,8 @@
       <div class="emojis" id="draws"></div>
       <h3>表情贴纸</h3>
       <div class="emojis" id="emojis"></div>
-      <label class="row">大小<input type="range" id="sSize" min="20" max="800" value="120"></label>
-      <label class="row">旋转<input type="range" id="sRot" min="-180" max="180" value="0"></label>
+      <label class="row">大小<input type="range" id="sSize" min="20" max="1200" value="120"></label>
+      <label class="row">旋转<input type="range" id="sRot" min="-180" max="180" value="0"><span class="rv" id="sRotV">0°</span></label>
       <div class="grid"><button id="sFlip">↔ 翻转</button><button id="sDel">🗑 删除选中</button></div>
       <p class="hint">点贴纸加到图上，在图上拖动摆位置。选中后拖右下角的橙色圆点可同时缩放、旋转；手机上也可以双指捏合缩放、旋转。电脑上滚轮也能缩放。</p>
     </div>
@@ -139,6 +146,9 @@
       <input type="text" id="tBot" placeholder="底部文字，例如：只是脸大">
       <label class="row">字号<input type="range" id="tSize" min="4" max="20" value="9"></label>
       <label class="row">颜色<input type="color" id="tColor" value="#ffffff"></label>
+      <label class="row">顶部旋转<input type="range" id="tRotT" min="-180" max="180" value="0"><span class="rv" id="tRotTV">0°</span></label>
+      <label class="row">底部旋转<input type="range" id="tRotB" min="-180" max="180" value="0"><span class="rv" id="tRotBV">0°</span></label>
+      <p class="hint">滑块拖到中间就是 0°（不旋转）。</p>
     </div>
 
     <div class="sec" id="sec-flt">

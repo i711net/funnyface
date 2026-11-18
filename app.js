@@ -20,7 +20,7 @@ const cellCount = () => LAYOUTS[layout][0] * LAYOUTS[layout][1];
 function emptyCell() {
   const c = document.createElement('canvas');
   return { W: 0, H: 0, work: c, wctx: c.getContext('2d', { willReadFrequently: true }), orig: null, undo: [], stickers: [], sel: -1, center: null,
-    faces: [], origFaces: [], isDemo: false, src: null, rotBase: null, detecting: false, dtoken: 0, txt: { top: '', bot: '', size: 9, color: '#ffffff' } };
+    faces: [], origFaces: [], isDemo: false, src: null, rotBase: null, detecting: false, dtoken: 0, txt: { top: '', bot: '', size: 9, color: '#ffffff', rt: 0, rb: 0 } };
 }
 function makeCell(img, demo = false) {
   const c = emptyCell(), s = Math.min(1, MAX / Math.max(img.width, img.height));
@@ -34,11 +34,11 @@ const isEmpty = c => !c.W || c.isDemo;
 
 function saveCell() {
   Object.assign(cells[active], { W, H, work, wctx, orig, undo: undoStack, stickers, sel, center, faces, origFaces, isDemo,
-    txt: { top: $('tTop').value, bot: $('tBot').value, size: +$('tSize').value, color: $('tColor').value } });
+    txt: { top: $('tTop').value, bot: $('tBot').value, size: +$('tSize').value, color: $('tColor').value, rt: +$('tRotT').value, rb: +$('tRotB').value } });
 }
 function loadCell(c) {
   ({ W, H, work, wctx, orig, stickers, sel, center, faces, origFaces, isDemo } = c); undoStack = c.undo;
-  $('tTop').value = c.txt.top; $('tBot').value = c.txt.bot; $('tSize').value = c.txt.size; $('tColor').value = c.txt.color;
+  $('tTop').value = c.txt.top; $('tBot').value = c.txt.bot; $('tSize').value = c.txt.size; $('tColor').value = c.txt.color; $('tRotT').value = c.txt.rt || 0; $('tRotB').value = c.txt.rb || 0; showTxtRot(); syncS();
   c.rotBase = null; resetRotUI();
   if (W) { cv.width = W; cv.height = H; }
   $('empty').style.display = W ? 'none' : 'flex'; cv.style.display = W ? 'block' : 'none';
@@ -204,8 +204,10 @@ function drawCell(g, c, showSel) {
     g.save();
     g.font = `900 ${fs}px Impact,"Arial Black","Microsoft YaHei","PingFang SC",sans-serif`;
     g.textAlign = 'center'; g.lineJoin = 'round'; g.lineWidth = Math.max(3, fs / 7); g.strokeStyle = '#000'; g.fillStyle = T.color;
-    if (T.top) { g.textBaseline = 'top'; g.strokeText(T.top, c.W / 2, fs * .3, c.W * .95); g.fillText(T.top, c.W / 2, fs * .3, c.W * .95); }
-    if (T.bot) { g.textBaseline = 'bottom'; g.strokeText(T.bot, c.W / 2, c.H - fs * .3, c.W * .95); g.fillText(T.bot, c.W / 2, c.H - fs * .3, c.W * .95); }
+    g.textBaseline = 'middle';
+    const line = (t, y, deg) => { g.save(); g.translate(c.W / 2, y); g.rotate((deg || 0) * Math.PI / 180); g.strokeText(t, 0, 0, c.W * .95); g.fillText(t, 0, 0, c.W * .95); g.restore(); };
+    if (T.top) line(T.top, fs * .8, T.rt);
+    if (T.bot) line(T.bot, c.H - fs * .8, T.rb);
     g.restore();
   }
   if (showSel && $('showPts').checked) {
@@ -393,13 +395,17 @@ function needFaces() {
   if (!faces.length) { toast('没识别到脸，试试“重新识别”或用手动工具'); return false; }
   return true;
 }
+let batchSeq = Date.now() % 100000;
 function runOnFaces(fn, warps = true) {
   if (!needFaces()) return;
   pushUndo();
   const panel = document.querySelector('.panel'); panel.classList.add('busy');
   setTimeout(() => {
+    const n0 = stickers.length;
     try { faces.map(geo).forEach(G => fn(G)); } catch (e) { console.error(e); toast('处理出错了'); }
-    panel.classList.remove('busy'); sel = -1; render();
+    sel = -1;
+    if (stickers.length > n0) { const b = ++batchSeq; for (let i = n0; i < stickers.length; i++) stickers[i].b = b; sel = stickers.length - 1; }
+    panel.classList.remove('busy'); syncS(); render();
     if (warps) detect(true);
   }, 20);
 }
@@ -484,6 +490,10 @@ stage.addEventListener('wheel', e => { if (e.ctrlKey || e.metaKey) e.preventDefa
 if (window.ResizeObserver) new ResizeObserver(() => applyZoom()).observe(stage); else window.addEventListener('resize', applyZoom);
 
 /* ================= 画布交互 ================= */
+// iPhone Safari 会用自带的双指缩放抢走手势，这里拦掉，交给下面的 pointer 事件处理
+['gesturestart', 'gesturechange', 'gestureend'].forEach(t => document.addEventListener(t, e => e.preventDefault(), { passive: false }));
+stage.addEventListener('touchmove', e => { if (e.touches.length > 1 || ptrs.size) e.preventDefault(); }, { passive: false });
+stage.addEventListener('touchstart', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 function pos(e) { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; }
 let down = false, last = null, cur = null, raf = 0, dragOff = null;
 function hit(p) { for (let i = stickers.length - 1; i >= 0; i--) { const s = stickers[i]; if (Math.abs(p[0] - s.x) < s.s * .6 && Math.abs(p[1] - s.y) < s.s * .6) return i; } return -1; }
@@ -514,9 +524,11 @@ function startPinch() {
   else pinch = { kind: 'zoom', d0: d, z0: zoom };
   $('ring').style.display = 'none';
 }
-cv.addEventListener('pointerdown', e => {
+stage.addEventListener('pointerdown', e => {
   if (!W) return;
-  cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (e.target.closest && e.target.closest('#empty')) return;
+  try { stage.setPointerCapture(e.pointerId); } catch (_) {}
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (ptrs.size === 2) { startPinch(); return; }
   if (ptrs.size > 2) return;
   const p = pos(e);
@@ -536,7 +548,7 @@ cv.addEventListener('pointerdown', e => {
   if (tab !== 'warp') return;
   pushUndo(); down = true; last = cur = p; loop();
 });
-cv.addEventListener('pointermove', e => {
+stage.addEventListener('pointermove', e => {
   if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pinch) {
     if (ptrs.size < 2) return;
@@ -570,8 +582,8 @@ const up = e => {
   if (pendingDeselect) { pendingDeselect = false; sel = -1; render(); }
   const was = down && tab === 'warp'; down = false; cancelAnimationFrame(raf); if (was) detect(true);
 };
-cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
-cv.addEventListener('pointerleave', () => $('ring').style.display = 'none');
+stage.addEventListener('pointerup', up); stage.addEventListener('pointercancel', up);
+stage.addEventListener('pointerleave', () => $('ring').style.display = 'none');
 cv.addEventListener('wheel', e => {
   if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY); return; }
   if ((tab === 'stk' || tab === 'ai') && sel >= 0) { e.preventDefault(); const s = stickers[sel]; s.s = Math.max(20, Math.min(1200, s.s * (e.deltaY < 0 ? 1.08 : .92))); syncS(); render(); }
@@ -593,16 +605,52 @@ Object.keys(DRAW).forEach(k => { const b = document.createElement('button'); b.t
 '😎 🤓 🥸 🤡 👓 🕶️ 🎩 👑 🧢 🎓 🪖 👒 👄 💋 👅 👃 👀 👁️ 🦷 🥵 😂 🤣 😜 🤪 💩 🔥 💦 💢 💤 ❤️ ⭐ ✨ 🌈 🐷 🐽 🐶 🐱 🦄 🍕 🍌 🎉 💯'.split(' ').forEach(m => {
   const b = document.createElement('button'); b.textContent = m; b.onclick = () => addCenter({ e: m }); $('emojis').appendChild(b);
 });
-function syncS() { if (sel < 0) return; $('sSize').value = stickers[sel].s; $('sRot').value = stickers[sel].r; }
-$('sSize').oninput = () => { if (sel >= 0) { stickers[sel].s = +$('sSize').value; render(); } };
-$('sRot').oninput = () => { if (sel >= 0) { stickers[sel].r = +$('sRot').value; render(); } };
-$('sFlip').onclick = () => { if (sel >= 0) { stickers[sel].f = !stickers[sel].f; render(); } };
-$('sDel').onclick = () => { if (sel >= 0) { pushUndo(); stickers.splice(sel, 1); sel = -1; render(); } };
+/* 选中贴纸的控制（贴纸页 s* 和 AI 页 a* 两套，共用逻辑） */
+function group(withAll) {
+  const s = stickers[sel]; if (!s) return [];
+  return withAll && s.b ? stickers.filter(t => t.b === s.b) : [s];
+}
+function syncS() {
+  const s = stickers[sel], on = !!s;
+  ['s', 'a'].forEach(k => {
+    if (on) {
+      const mx = Math.max(1200, Math.ceil(s.s * 1.5));
+      $(k + 'Size').max = mx; $(k + 'Size').value = s.s; $(k + 'Rot').value = s.r; $(k + 'RotV').textContent = Math.round(s.r) + '°';
+    }
+  });
+  document.querySelector('.stkctl').classList.toggle('dis', !on);
+  $('aHint').textContent = on ? (s.b && $('aAll').checked && group(true).length > 1 ? `已选中这一批 ${group(true).length} 个贴纸，滑块会一起调整。` : '已选中贴纸，用滑块调整。') : '先点一下图上的贴纸选中它，再用下面的滑块调整。';
+}
+function bindCtl(k, allFn) {
+  let sliding = false;
+  const begin = () => { if (!sliding) { pushUndo(); sliding = true; } };
+  const end = () => { sliding = false; };
+  $(k + 'Size').addEventListener('input', () => {
+    const s = stickers[sel]; if (!s) return toast('先点一下图上的贴纸选中它');
+    begin(); const nv = +$(k + 'Size').value, f = nv / s.s;
+    group(allFn()).forEach(t => { t.s = t === s ? nv : Math.max(10, t.s * f); }); render(); syncS();
+  });
+  $(k + 'Rot').addEventListener('input', () => {
+    const s = stickers[sel]; if (!s) return toast('先点一下图上的贴纸选中它');
+    begin(); const nv = +$(k + 'Rot').value, d = nv - s.r;
+    group(allFn()).forEach(t => { t.r = t === s ? nv : Math.round(normDeg(t.r + d)); }); render(); syncS();
+  });
+  ['Size', 'Rot'].forEach(x => $(k + x).addEventListener('change', end));
+  $(k + 'Flip').onclick = () => { if (sel < 0) return toast('先点一下图上的贴纸选中它'); pushUndo(); group(allFn()).forEach(t => t.f = !t.f); render(); };
+  $(k + 'Del').onclick = () => {
+    if (sel < 0) return toast('先点一下图上的贴纸选中它');
+    pushUndo(); const g = group(allFn()); stickers = stickers.filter(t => !g.includes(t)); sel = -1; syncS(); render();
+  };
+}
+bindCtl('s', () => false);
+bindCtl('a', () => $('aAll').checked);
+$('aAll').onchange = syncS;
 document.addEventListener('keydown', e => {
   if ((e.key === 'Delete' || e.key === 'Backspace') && sel >= 0 && !/INPUT/.test(document.activeElement.tagName)) { pushUndo(); stickers.splice(sel, 1); sel = -1; render(); }
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); $('undo').click(); }
 });
-['tTop', 'tBot', 'tSize', 'tColor'].forEach(id => $(id).oninput = () => render());
+function showTxtRot() { $('tRotTV').textContent = $('tRotT').value + '°'; $('tRotBV').textContent = $('tRotB').value + '°'; }
+['tTop', 'tBot', 'tSize', 'tColor', 'tRotT', 'tRotB'].forEach(id => $(id).oninput = () => { showTxtRot(); render(); });
 
 /* ================= 旋转 / 翻转（当前格） ================= */
 const normDeg = d => { d = ((d + 180) % 360 + 360) % 360 - 180; return d; };
@@ -663,7 +711,7 @@ function compose(target, Lm, preview = false) {
   let a = RATIOS[o.ratio];
   if (!a) { const f = cells.slice(0, n).find(c => c.W); const ca = f ? f.W / f.H : 3 / 4; a = cols * ca / rows; }
   let TW, TH; if (a >= 1) { TW = Lm; TH = Lm / a; } else { TH = Lm; TW = Lm * a; }
-  const g = o.gap / 1000 * Math.max(TW, TH), rad = o.radius / 1000 * Math.max(TW, TH);
+  const multi = n > 1, g = multi ? o.gap / 1000 * Math.max(TW, TH) : 0, rad = multi ? o.radius / 1000 * Math.max(TW, TH) : 0;  // 单图不加边框
   const capH = o.cap ? Math.max(TW, TH) * .09 : 0;
   target.width = Math.round(TW); target.height = Math.round(TH + capH);
   const x = target.getContext('2d');
