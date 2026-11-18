@@ -586,7 +586,7 @@ stage.addEventListener('pointerup', up); stage.addEventListener('pointercancel',
 stage.addEventListener('pointerleave', () => $('ring').style.display = 'none');
 cv.addEventListener('wheel', e => {
   if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY); return; }
-  if ((tab === 'stk' || tab === 'ai') && sel >= 0) { e.preventDefault(); const s = stickers[sel]; s.s = Math.max(20, Math.min(1200, s.s * (e.deltaY < 0 ? 1.08 : .92))); syncS(); render(); }
+  if ((tab === 'stk' || tab === 'ai') && sel >= 0) { e.preventDefault(); const s = stickers[sel]; s.s = Math.max(10, Math.min(3000, s.s * (e.deltaY < 0 ? 1.08 : .92))); syncS(); render(); }
   else if (tab === 'warp' && !scrollable()) { e.preventDefault(); const z = $('size'); z.value = +z.value + (e.deltaY < 0 ? 8 : -8); updRing(e); }
 }, { passive: false });
 
@@ -606,6 +606,8 @@ Object.keys(DRAW).forEach(k => { const b = document.createElement('button'); b.t
   const b = document.createElement('button'); b.textContent = m; b.onclick = () => addCenter({ e: m }); $('emojis').appendChild(b);
 });
 /* 选中贴纸的控制（贴纸页 s* 和 AI 页 a* 两套，共用逻辑） */
+/* 大小滑块用对数刻度：0~1000 对应 10~3000 像素，小贴纸也能细调 */
+const v2size = v => 10 * Math.pow(300, v / 1000), size2v = sz => Math.round(1000 * Math.log(Math.max(10, sz) / 10) / Math.log(300));
 function group(withAll) {
   const s = stickers[sel]; if (!s) return [];
   return withAll && s.b ? stickers.filter(t => t.b === s.b) : [s];
@@ -614,8 +616,7 @@ function syncS() {
   const s = stickers[sel], on = !!s;
   ['s', 'a'].forEach(k => {
     if (on) {
-      const mx = Math.max(1200, Math.ceil(s.s * 1.5));
-      $(k + 'Size').max = mx; $(k + 'Size').value = s.s; $(k + 'Rot').value = s.r; $(k + 'RotV').textContent = Math.round(s.r) + '°';
+      $(k + 'Size').value = size2v(s.s); $(k + 'Rot').value = s.r; $(k + 'RotV').textContent = Math.round(s.r) + '°';
     }
   });
   document.querySelector('.stkctl').classList.toggle('dis', !on);
@@ -627,7 +628,7 @@ function bindCtl(k, allFn) {
   const end = () => { sliding = false; };
   $(k + 'Size').addEventListener('input', () => {
     const s = stickers[sel]; if (!s) return toast('先点一下图上的贴纸选中它');
-    begin(); const nv = +$(k + 'Size').value, f = nv / s.s;
+    begin(); const nv = v2size(+$(k + 'Size').value), f = nv / s.s;
     group(allFn()).forEach(t => { t.s = t === s ? nv : Math.max(10, t.s * f); }); render(); syncS();
   });
   $(k + 'Rot').addEventListener('input', () => {
@@ -642,6 +643,18 @@ function bindCtl(k, allFn) {
     pushUndo(); const g = group(allFn()); stickers = stickers.filter(t => !g.includes(t)); sel = -1; syncS(); render();
   };
 }
+function stepStk(k, op) {
+  const s = stickers[sel]; if (!s) return toast('先点一下图上的贴纸选中它');
+  pushUndo();
+  const g = group(k === 'a' && $('aAll').checked);
+  if (op === 's+' || op === 's-') { const f = op === 's+' ? 1.1 : 1 / 1.1; g.forEach(t => t.s = Math.max(10, Math.min(3000, t.s * f))); }
+  else { const d = op === 'r+' ? 5 : -5; g.forEach(t => t.r = Math.round(normDeg(t.r + d))); }
+  syncS(); render();
+}
+document.querySelectorAll('button.sm[data-op]').forEach(b => b.onclick = () => stepStk(b.dataset.k, b.dataset.op));
+document.querySelectorAll('button.sm[data-t]').forEach(b => b.onclick = () => {
+  const r = $(b.dataset.t); r.value = Math.max(-180, Math.min(180, +r.value + +b.dataset.d)); showTxtRot(); render();
+});
 bindCtl('s', () => false);
 bindCtl('a', () => $('aAll').checked);
 $('aAll').onchange = syncS;
