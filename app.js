@@ -188,7 +188,15 @@ function drawCell(g, c, showSel) {
       g.font = s.s + 'px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",serif';
       g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(s.e, 0, s.s * .06);
     }
-    if (showSel && i === c.sel) { g.setLineDash([8, 6]); g.lineWidth = 3; g.strokeStyle = '#ff6b35'; g.strokeRect(-s.s * .6, -s.s * .6, s.s * 1.2, s.s * 1.2); }
+    if (showSel && i === c.sel) {
+      const k = handleR / 16;
+      g.setLineDash([8 * k, 6 * k]); g.lineWidth = 3 * k; g.strokeStyle = '#ff6b35'; g.strokeRect(-s.s * .6, -s.s * .6, s.s * 1.2, s.s * 1.2);
+      g.setLineDash([]); g.beginPath(); g.arc(s.s * .6, s.s * .6, handleR, 0, 7); g.fillStyle = '#ff6b35'; g.fill();
+      g.lineWidth = 3 * k; g.strokeStyle = '#fff'; g.stroke();
+      g.beginPath(); const h = handleR * .45, hx = s.s * .6, hy = s.s * .6;
+      g.moveTo(hx - h, hy - h); g.lineTo(hx + h, hy + h); g.moveTo(hx - h, hy - h); g.lineTo(hx - h * .2, hy - h); g.moveTo(hx - h, hy - h); g.lineTo(hx - h, hy - h * .2);
+      g.moveTo(hx + h, hy + h); g.lineTo(hx + h * .2, hy + h); g.moveTo(hx + h, hy + h); g.lineTo(hx + h, hy + h * .2); g.stroke();
+    }
     g.restore();
   });
   const T = c.txt, fs = Math.round(c.W * T.size / 100);
@@ -206,8 +214,10 @@ function drawCell(g, c, showSel) {
     c.faces.forEach(P => P.forEach(p => { g.beginPath(); g.arc(p[0], p[1], r, 0, 7); g.fill(); }));
   }
 }
+let handleR = 16;
 function render(showSel = true) {
   saveCell();
+  if (W) { const cw = cv.getBoundingClientRect().width; handleR = 16 * W / (cw || W); }
   if (W) { ctx.clearRect(0, 0, W, H); drawCell(ctx, cells[active], showSel); }
   schedulePreview();
 }
@@ -485,20 +495,65 @@ function updRing(e) {
   ring.style.left = (e.clientX - d / 2) + 'px'; ring.style.top = (e.clientY - d / 2) + 'px';
 }
 function loop() { if (!down) return; if (brush !== 'push' && cur) { warpAt(cur[0], cur[1], $('size').value / 2, brush, $('str').value * .012); render(); } raf = requestAnimationFrame(loop); }
+/* 贴纸缩放手柄：把点转到贴纸自身坐标，看是否落在右下角手柄上 */
+function hitHandle(p) {
+  if (sel < 0 || !stickers[sel]) return false;
+  const s = stickers[sel], a = -s.r * Math.PI / 180, dx = p[0] - s.x, dy = p[1] - s.y;
+  let lx = dx * Math.cos(a) - dy * Math.sin(a); const ly = dx * Math.sin(a) + dy * Math.cos(a);
+  if (s.f) lx = -lx;
+  return Math.hypot(lx - s.s * .6, ly - s.s * .6) < handleR * 1.6;
+}
+const ptrs = new Map();
+let pinch = null, handleDrag = null, pendingDeselect = false;
+const stkTab = () => tab === 'stk' || tab === 'ai';
+function twoPts() { const v = [...ptrs.values()]; return [v[0], v[1]]; }
+function startPinch() {
+  const [a, b] = twoPts(), d = Math.hypot(b.x - a.x, b.y - a.y) || 1, ang = Math.atan2(b.y - a.y, b.x - a.x);
+  down = false; cancelAnimationFrame(raf); handleDrag = null; panning = null; pendingDeselect = false;
+  if (stkTab() && sel >= 0) pinch = { kind: 'stk', d0: d, a0: ang, s0: stickers[sel].s, r0: stickers[sel].r };
+  else pinch = { kind: 'zoom', d0: d, z0: zoom };
+  $('ring').style.display = 'none';
+}
 cv.addEventListener('pointerdown', e => {
   if (!W) return;
-  cv.setPointerCapture(e.pointerId); const p = pos(e);
+  cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (ptrs.size === 2) { startPinch(); return; }
+  if (ptrs.size > 2) return;
+  const p = pos(e);
   if (panMode || spaceDown || e.button === 1) { e.preventDefault(); panning = { x: e.clientX, y: e.clientY, l: stage.scrollLeft, t: stage.scrollTop }; return; }
   if (pickCenter) { center = p; pickCenter = false; $('setCenter').classList.remove('on'); toast('中心点已设好，再点效果按钮'); return; }
-  if (tab === 'stk' || tab === 'ai') {
-    const i = hit(p); sel = i;
-    if (i >= 0) { pushUndo(); down = true; dragOff = [p[0] - stickers[i].x, p[1] - stickers[i].y]; syncS(); }
-    render(); return;
+  if (stkTab()) {
+    if (hitHandle(p)) {
+      const s = stickers[sel]; pushUndo();
+      handleDrag = { s0: s.s, r0: s.r, d0: Math.hypot(p[0] - s.x, p[1] - s.y) || 1, a0: Math.atan2(p[1] - s.y, p[0] - s.x) };
+      return;
+    }
+    const i = hit(p);
+    if (i >= 0) { sel = i; pushUndo(); down = true; dragOff = [p[0] - stickers[i].x, p[1] - stickers[i].y]; syncS(); render(); }
+    else pendingDeselect = sel >= 0;   // 等手指抬起再取消选中，方便双指捏合
+    return;
   }
   if (tab !== 'warp') return;
   pushUndo(); down = true; last = cur = p; loop();
 });
 cv.addEventListener('pointermove', e => {
+  if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinch) {
+    if (ptrs.size < 2) return;
+    const [a, b] = twoPts(), d = Math.hypot(b.x - a.x, b.y - a.y) || 1, ang = Math.atan2(b.y - a.y, b.x - a.x);
+    if (pinch.kind === 'stk' && stickers[sel]) {
+      const s = stickers[sel];
+      s.s = Math.max(15, Math.min(3000, pinch.s0 * d / pinch.d0));
+      s.r = Math.round(normDeg(pinch.r0 + (ang - pinch.a0) * 180 / Math.PI)); syncS(); render();
+    } else setZoom(pinch.z0 * d / pinch.d0, (a.x + b.x) / 2, (a.y + b.y) / 2);
+    return;
+  }
+  if (handleDrag && stickers[sel]) {
+    const p = pos(e), s = stickers[sel], d = Math.hypot(p[0] - s.x, p[1] - s.y);
+    s.s = Math.max(15, Math.min(3000, handleDrag.s0 * d / handleDrag.d0));
+    s.r = Math.round(normDeg(handleDrag.r0 + (Math.atan2(p[1] - s.y, p[0] - s.x) - handleDrag.a0) * 180 / Math.PI));
+    syncS(); render(); return;
+  }
   if (panning) { stage.scrollLeft = panning.l - (e.clientX - panning.x); stage.scrollTop = panning.t - (e.clientY - panning.y); return; }
   updRing(e); if (!down) return; const p = pos(e);
   if (tab !== 'warp') { if (sel >= 0) { stickers[sel].x = p[0] - dragOff[0]; stickers[sel].y = p[1] - dragOff[1]; render(); } return; }
@@ -508,7 +563,13 @@ cv.addEventListener('pointermove', e => {
     if (Math.hypot(dx, dy) > 1) { warpAt(last[0], last[1], $('size').value / 2, 'push', 0, dx * $('str').value / 6, dy * $('str').value / 6); last = p; render(); }
   }
 });
-const up = () => { panning = null; const was = down && tab === 'warp'; down = false; cancelAnimationFrame(raf); if (was) detect(true); };
+const up = e => {
+  ptrs.delete(e.pointerId);
+  if (pinch) { if (ptrs.size < 2) pinch = null; return; }
+  handleDrag = null; panning = null;
+  if (pendingDeselect) { pendingDeselect = false; sel = -1; render(); }
+  const was = down && tab === 'warp'; down = false; cancelAnimationFrame(raf); if (was) detect(true);
+};
 cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
 cv.addEventListener('pointerleave', () => $('ring').style.display = 'none');
 cv.addEventListener('wheel', e => {
