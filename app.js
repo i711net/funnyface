@@ -18,7 +18,7 @@ function setImage(src, demo = false) {
   wctx.drawImage(src, 0, 0, W, H);
   orig = wctx.getImageData(0, 0, W, H);
   undoStack = []; stickers = []; sel = -1; center = null; faces = []; origFaces = []; isDemo = demo;
-  render();
+  zoom = 1; applyZoom(); render();
   if (demo) setStatus(modelsReady ? '模型已就绪。点上方“📷 上传照片”，会自动识别五官。' : '正在加载人脸识别模型…', modelsReady ? 'ok' : '');
   else detect(false, true);
 }
@@ -352,19 +352,50 @@ function applyFilter(n) {
 }
 document.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { pushUndo(); applyFilter(b.dataset.x); render(); });
 
+
+/* ================= 画面缩放 / 拖动 ================= */
+const stage = $('stage');
+let zoom = 1, panMode = false, spaceDown = false, panning = null;
+function fitScale() { return W ? Math.min((stage.clientWidth - 16) / W, (stage.clientHeight - 16) / H) : 1; }
+function applyZoom() {
+  if (!W) return; const s = fitScale() * zoom;
+  cv.style.width = Math.max(1, W * s) + 'px'; cv.style.height = Math.max(1, H * s) + 'px';
+  $('zVal').textContent = Math.round(zoom * 100) + '%';
+}
+function setZoom(z, ax, ay) {
+  z = Math.max(.25, Math.min(8, z)); if (!W) return;
+  const sr = stage.getBoundingClientRect();
+  if (ax === undefined) { ax = sr.left + stage.clientWidth / 2; ay = sr.top + stage.clientHeight / 2; }
+  const r = cv.getBoundingClientRect(), fx = (ax - r.left) / r.width, fy = (ay - r.top) / r.height;
+  zoom = z; applyZoom();
+  const r2 = cv.getBoundingClientRect();
+  stage.scrollLeft += r2.left + fx * r2.width - ax; stage.scrollTop += r2.top + fy * r2.height - ay;
+}
+const scrollable = () => stage.scrollWidth > stage.clientWidth + 2 || stage.scrollHeight > stage.clientHeight + 2;
+$('zIn').onclick = () => setZoom(zoom * 1.25);
+$('zOut').onclick = () => setZoom(zoom / 1.25);
+$('zFit').onclick = () => { zoom = 1; applyZoom(); };
+$('zPan').onclick = () => { panMode = !panMode; $('zPan').classList.toggle('on', panMode); stage.classList.toggle('pan', panMode); toast(panMode ? '拖动画面模式：再点 ✋ 退出' : '已退出拖动模式'); };
+document.addEventListener('keydown', e => { if (e.code === 'Space' && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); if (!spaceDown) { spaceDown = true; stage.classList.add('pan'); $('ring').style.display = 'none'; } } });
+document.addEventListener('keyup', e => { if (e.code === 'Space') { spaceDown = false; stage.classList.toggle('pan', panMode); } });
+stage.addEventListener('wheel', e => { if (e.ctrlKey || e.metaKey) e.preventDefault(); }, { passive: false });
+if (window.ResizeObserver) new ResizeObserver(() => applyZoom()).observe(stage); else window.addEventListener('resize', applyZoom);
+
 /* ================= 画布交互 ================= */
 function pos(e) { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; }
 let down = false, last = null, cur = null, raf = 0, dragOff = null;
 function hit(p) { for (let i = stickers.length - 1; i >= 0; i--) { const s = stickers[i]; if (Math.abs(p[0] - s.x) < s.s * .6 && Math.abs(p[1] - s.y) < s.s * .6) return i; } return -1; }
 function updRing(e) {
   const ring = $('ring'); if (tab !== 'warp' || !e) { ring.style.display = 'none'; return; }
-  const sr = $('stage').getBoundingClientRect(), d = $('size').value * cv.getBoundingClientRect().width / W;
+  if (panning || panMode || spaceDown) { ring.style.display = 'none'; return; }
+  const d = $('size').value * cv.getBoundingClientRect().width / W;
   ring.style.display = 'block'; ring.style.width = ring.style.height = d + 'px';
-  ring.style.left = (e.clientX - sr.left - d / 2) + 'px'; ring.style.top = (e.clientY - sr.top - d / 2) + 'px';
+  ring.style.left = (e.clientX - d / 2) + 'px'; ring.style.top = (e.clientY - d / 2) + 'px';
 }
 function loop() { if (!down) return; if (brush !== 'push' && cur) { warpAt(cur[0], cur[1], $('size').value / 2, brush, $('str').value * .012); render(); } raf = requestAnimationFrame(loop); }
 cv.addEventListener('pointerdown', e => {
   cv.setPointerCapture(e.pointerId); const p = pos(e);
+  if (panMode || spaceDown || e.button === 1) { e.preventDefault(); panning = { x: e.clientX, y: e.clientY, l: stage.scrollLeft, t: stage.scrollTop }; return; }
   if (pickCenter) { center = p; pickCenter = false; $('setCenter').classList.remove('on'); toast('中心点已设好，再点效果按钮'); return; }
   if (tab === 'stk' || tab === 'ai') {
     const i = hit(p); sel = i;
@@ -375,6 +406,7 @@ cv.addEventListener('pointerdown', e => {
   pushUndo(); down = true; last = cur = p; loop();
 });
 cv.addEventListener('pointermove', e => {
+  if (panning) { stage.scrollLeft = panning.l - (e.clientX - panning.x); stage.scrollTop = panning.t - (e.clientY - panning.y); return; }
   updRing(e); if (!down) return; const p = pos(e);
   if (tab !== 'warp') { if (sel >= 0) { stickers[sel].x = p[0] - dragOff[0]; stickers[sel].y = p[1] - dragOff[1]; render(); } return; }
   cur = p;
@@ -383,12 +415,13 @@ cv.addEventListener('pointermove', e => {
     if (Math.hypot(dx, dy) > 1) { warpAt(last[0], last[1], $('size').value / 2, 'push', 0, dx * $('str').value / 6, dy * $('str').value / 6); last = p; render(); }
   }
 });
-const up = () => { const was = down && tab === 'warp'; down = false; cancelAnimationFrame(raf); if (was) detect(true); };
+const up = () => { panning = null; const was = down && tab === 'warp'; down = false; cancelAnimationFrame(raf); if (was) detect(true); };
 cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
 cv.addEventListener('pointerleave', () => $('ring').style.display = 'none');
 cv.addEventListener('wheel', e => {
+  if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY); return; }
   if ((tab === 'stk' || tab === 'ai') && sel >= 0) { e.preventDefault(); const s = stickers[sel]; s.s = Math.max(20, Math.min(1200, s.s * (e.deltaY < 0 ? 1.08 : .92))); syncS(); render(); }
-  else if (tab === 'warp') { e.preventDefault(); const z = $('size'); z.value = +z.value + (e.deltaY < 0 ? 8 : -8); updRing(e); }
+  else if (tab === 'warp' && !scrollable()) { e.preventDefault(); const z = $('size'); z.value = +z.value + (e.deltaY < 0 ? 8 : -8); updRing(e); }
 }, { passive: false });
 
 $('tabs').onclick = e => {

@@ -19,7 +19,17 @@
   </div>
 </header>
 <main>
-  <div class="stage" id="stage"><canvas id="cv"></canvas><div id="ring"></div></div>
+  <div class="stagewrap">
+    <div class="stage" id="stage"><canvas id="cv"></canvas></div>
+    <div class="zoombar">
+      <button id="zOut" title="缩小">－</button>
+      <span id="zVal">100%</span>
+      <button id="zIn" title="放大">＋</button>
+      <button id="zFit" title="适应窗口">⤢</button>
+      <button id="zPan" title="拖动画面（也可按住空格拖动）">✋</button>
+    </div>
+  </div>
+  <div id="ring"></div>
   <div class="panel">
     <div class="tabs" id="tabs">
       <button data-t="ai" class="on">🤖 AI一键</button>
@@ -135,9 +145,9 @@
         <button data-x="sunburn">🦞 晒伤红</button>
       </div>
     </div>
+    <div class="foot">照片只在你的浏览器里处理，不会上传到任何服务器。人脸识别：face-api（MIT 协议）。<br>放大查看：图片右下角 ＋／－，或按住 Ctrl 滚动滚轮；放大后点 ✋ 或按住空格拖动画面。</div>
   </div>
 </main>
-<footer>照片只在你的浏览器里处理，不会上传到任何服务器。人脸识别：face-api（MIT 协议）。</footer>
 
 <div class="modal" id="modal"><div class="mbox">
   <img id="outImg" alt="导出结果">
